@@ -42,6 +42,11 @@ private static final String v6Property = "java.net.preferIPv6Addresses";
 
 private boolean preferV6 = false;
 
+private Name localhostName = null;
+private Object localhostNamedAddresses = null;
+private Object localhostAddresses = null;
+private boolean addressesLoaded = false;
+
 /**
  * Creates a DNSJavaNameService instance.
  * <p>
@@ -84,8 +89,30 @@ DNSJavaNameService() {
 
 	if (v6 != null && v6.equalsIgnoreCase("true"))
 		preferV6 = true;
-}
 
+	try {
+		// retrieve the name from the system that is used as localhost
+		Class inClass = Class.forName("java.net.InetAddressImplFactory");
+		Method create = inClass.getDeclaredMethod("create", null);
+		create.setAccessible(true);
+		Object impl = create.invoke(null, null);
+		Class clazz = Class.forName("java.net.InetAddressImpl");
+		Method hostname = clazz.getMethod("getLocalHostName", new Class[]{});
+		hostname.setAccessible(true);
+		localhostName = new Name((String)hostname.invoke(impl, null));
+		Method lookup = clazz.getMethod("lookupAllHostAddr", new Class[]{
+			String.class});
+		lookup.setAccessible(true);
+		localhostNamedAddresses = lookup.invoke(impl, new Object[]{
+			localhostName.toString()});
+		localhostAddresses = lookup.invoke(impl, new Object[]{
+			"localhost"});
+		addressesLoaded = true;
+	}
+	catch (Exception e) {
+		System.err.println("Could not obtain localhost: " + e);
+	}
+}
 
 public Object
 invoke(Object proxy, Method method, Object[] args) throws Throwable {
@@ -93,6 +120,14 @@ invoke(Object proxy, Method method, Object[] args) throws Throwable {
 		if (method.getName().equals("getHostByAddr")) {
 			return this.getHostByAddr((byte[]) args[0]);
 		} else if (method.getName().equals("lookupAllHostAddr")) {
+			// avoid asking a dns server (causing a probable timeout) when
+			// host is the name of the local host
+			if(addressesLoaded){
+				if(Name.fromString((String) args[0]).equals(localhostName))
+					return localhostNamedAddresses;
+				else if(((String)args[0]).equals("localhost"))
+					return localhostAddresses;
+			}
 			InetAddress[] addresses;
 			addresses = this.lookupAllHostAddr((String) args[0]);
 			Class returnType = method.getReturnType();
@@ -148,7 +183,6 @@ lookupAllHostAddr(String host) throws UnknownHostException {
 
 	InetAddress[] array = new InetAddress[records.length];
 	for (int i = 0; i < records.length; i++) {
-		Record record = records[i];
 		if (records[i] instanceof ARecord) {
 			ARecord a = (ARecord) records[i];
 			array[i] = a.getAddress();
